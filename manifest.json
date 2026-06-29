@@ -1,7 +1,7 @@
 {
 	"id": "space-launches",
 	"name": "Space Launches",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "1.7.2",
 	"description": "Track upcoming rocket launches and space events.",
 	"author": "Jesse Strijker",
