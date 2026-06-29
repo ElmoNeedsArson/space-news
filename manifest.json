@@ -1,10 +1,10 @@
 {
 	"id": "space-launches",
 	"name": "Space Launches",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "1.7.2",
-	"description": "Track upcoming rocket launches and space events in Obsidian.",
+	"description": "Track upcoming rocket launches and space events.",
 	"author": "Jesse Strijker",
-	"authorUrl": "https://github.com/jesse-strijker",
+	"authorUrl": "https://portfolio.jessestrijker.com",
 	"isDesktopOnly": false
 }
