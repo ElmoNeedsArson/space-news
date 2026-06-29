@@ -1,6 +1,4 @@
-![Space Launches in Obsidian](https://github.com/user-attachments/assets/94597bab-054b-443b-a6b7-20649648a863)
-
-![Space Launches in Obsidian](https://github.com/user-attachments/assets/46f17f41-da96-4351-baea-113ba3df2898)
+![Space Launches in Obsidian](https://github.com/user-attachments/assets/dd7b94d3-0337-43cf-a573-cef9fee3807e)
 
 # Space Launches
 
