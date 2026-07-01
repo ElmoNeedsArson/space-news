@@ -9,6 +9,10 @@ interface PluginContext {
 	saveSettings(): Promise<void>;
 }
 
+interface RefreshOptions {
+	force?: boolean;
+}
+
 export const VIEW_TYPE_SPACE_LAUNCHES = 'space-launches-view';
 const POST_LAUNCH_VISIBILITY_MS = 10 * 60 * 1000;
 
@@ -70,6 +74,7 @@ export class SpaceLaunchesView extends ItemView {
 	private eventsSection!: HTMLElement;
 	private eventsRow!: HTMLElement;
 	private statusEl!: HTMLElement;
+	private noticeEl!: HTMLElement;
 	private countdownEls: HTMLElement[] = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: PluginContext) {
@@ -104,19 +109,43 @@ export class SpaceLaunchesView extends ItemView {
 		}
 	}
 
-	async refresh() {
+	async refresh(options: RefreshOptions = {}) {
 		this.setStatus('Loading...');
-		try {
-			[this.allLaunches, this.allEvents] = await Promise.all([
-				this.plugin.client.fetchUpcoming(),
-				this.plugin.client.fetchEvents(),
-			]);
-			void this.plugin.saveSettings();
+		const errors: string[] = [];
+
+		if (!this.plugin.settings.showLaunches && !this.plugin.settings.showEvents) {
 			this.applyAndRender();
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.setStatus(`Failed to load launches: ${msg}`);
+			return;
 		}
+
+		if (this.plugin.settings.showLaunches) {
+			try {
+				this.allLaunches = await this.plugin.client.fetchUpcoming(options);
+			} catch (err) {
+				errors.push(`launches: ${errorMessage(err)}`);
+			}
+		}
+
+		if (this.plugin.settings.showEvents) {
+			try {
+				this.allEvents = await this.plugin.client.fetchEvents(options);
+			} catch (err) {
+				errors.push(`events: ${errorMessage(err)}`);
+			}
+		}
+
+		void this.plugin.saveSettings();
+
+		const missingRequiredData =
+			(this.plugin.settings.showLaunches && this.allLaunches.length === 0)
+			|| (this.plugin.settings.showEvents && this.allEvents.length === 0);
+
+		if (errors.length > 0 && missingRequiredData) {
+			this.setStatus(`Failed to load space data: ${errors.join('; ')}`);
+			return;
+		}
+
+		this.applyAndRender();
 	}
 
 	private applyAndRender() {
@@ -147,6 +176,7 @@ export class SpaceLaunchesView extends ItemView {
 		this.buildFilterPanel();
 
 		this.statusEl = root.createEl('div', { cls: 'sl-status sl-hidden' });
+		this.noticeEl = root.createEl('div', { cls: 'sl-notice sl-hidden' });
 
 		this.contentEl2 = root.createEl('div', { cls: 'sl-content' });
 		this.featuredCard = this.contentEl2.createEl('div', { cls: 'sl-card sl-card-featured' });
@@ -211,6 +241,11 @@ export class SpaceLaunchesView extends ItemView {
 		this.contentEl2.removeClass('sl-hidden');
 		this.countdownEls = [];
 
+		if (!this.plugin.settings.showLaunches && !this.plugin.settings.showEvents) {
+			this.setStatus('Launches and events are hidden in settings.');
+			return;
+		}
+
 		if (this.plugin.settings.showLaunches) {
 			this.featuredCard.removeClass('sl-hidden');
 			this.smallRow.removeClass('sl-hidden');
@@ -238,6 +273,8 @@ export class SpaceLaunchesView extends ItemView {
 		} else {
 			this.eventsSection.addClass('sl-hidden');
 		}
+
+		this.renderNotice();
 	}
 
 	private renderFeatured(launch: Launch) {
@@ -386,6 +423,21 @@ export class SpaceLaunchesView extends ItemView {
 	private setStatus(msg: string) {
 		this.statusEl.textContent = msg;
 		this.statusEl.removeClass('sl-hidden');
+		this.noticeEl?.addClass('sl-hidden');
 		this.contentEl2?.addClass('sl-hidden');
 	}
+
+	private renderNotice() {
+		const notice = this.plugin.client.getRateLimitNotice();
+		if (!notice) {
+			this.noticeEl.addClass('sl-hidden');
+			return;
+		}
+		this.noticeEl.textContent = notice;
+		this.noticeEl.removeClass('sl-hidden');
+	}
+}
+
+function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
 }

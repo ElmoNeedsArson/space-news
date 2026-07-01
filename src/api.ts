@@ -1,7 +1,8 @@
 import { requestUrl } from 'obsidian';
 
 const LL2_BASE = 'https://ll.thespacedevs.com/2.3.0';
-const CACHE_TTL_MS = 20 * 60 * 1000;
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_CACHE_BYTES = 5 * 1024 * 1024;
 
 export interface LaunchStatus {
@@ -112,11 +113,21 @@ interface EventCacheEntry {
 export interface SerializableCache {
 	launches: LaunchCacheEntry | null;
 	events: EventCacheEntry | null;
+	rateLimit?: {
+		launchesRetryAfter?: number;
+		eventsRetryAfter?: number;
+	};
+}
+
+interface FetchOptions {
+	force?: boolean;
 }
 
 export class LL2Client {
 	private launchCache: LaunchCacheEntry | null = null;
 	private eventCache: EventCacheEntry | null = null;
+	private launchRetryAfter = 0;
+	private eventRetryAfter = 0;
 
 	setCache(cache: SerializableCache | null) {
 		this.launchCache = cache?.launches
@@ -131,11 +142,22 @@ export class LL2Client {
 				events: cache.events.events.map(compactEvent),
 			}
 			: null;
+		this.launchRetryAfter = cache?.rateLimit?.launchesRetryAfter ?? 0;
+		this.eventRetryAfter = cache?.rateLimit?.eventsRetryAfter ?? 0;
 	}
 
 	getSerializableCache(): SerializableCache {
-		const cache = { launches: this.launchCache, events: this.eventCache };
-		return cacheSize(cache) <= MAX_CACHE_BYTES ? cache : { launches: null, events: null };
+		const cache = {
+			launches: this.launchCache,
+			events: this.eventCache,
+			rateLimit: {
+				launchesRetryAfter: this.launchRetryAfter,
+				eventsRetryAfter: this.eventRetryAfter,
+			},
+		};
+		return cacheSize(cache) <= MAX_CACHE_BYTES
+			? cache
+			: { launches: null, events: null, rateLimit: cache.rateLimit };
 	}
 
 	private isCacheValid(entry: { fetchedAt: number } | null): boolean {
@@ -143,53 +165,99 @@ export class LL2Client {
 		return Date.now() - entry.fetchedAt < CACHE_TTL_MS;
 	}
 
-	async fetchUpcoming(): Promise<Launch[]> {
-		if (this.isCacheValid(this.launchCache) && this.launchCache) {
+	async fetchUpcoming(options: FetchOptions = {}): Promise<Launch[]> {
+		if (!options.force && this.isCacheValid(this.launchCache) && this.launchCache) {
 			return this.launchCache.launches;
 		}
 
-		const response = await requestUrl({
-			url: `${LL2_BASE}/launches/upcoming/?limit=50&ordering=net`,
-			method: 'GET',
-			headers: { 'Accept': 'application/json' },
-			throw: false,
-		});
-
-		if (response.status < 200 || response.status >= 300) {
-			throw new Error(`LL2 API returned status ${response.status}`);
+		if (Date.now() < this.launchRetryAfter && this.launchCache) {
+			return this.launchCache.launches;
 		}
 
-		const data = response.json as LL2Response;
-		const launches = data.results.map(compactLaunch);
-		this.launchCache = { fetchedAt: Date.now(), launches };
-		return launches;
+		try {
+			const response = await requestUrl({
+				url: `${LL2_BASE}/launches/upcoming/?limit=50&ordering=net`,
+				method: 'GET',
+				headers: { 'Accept': 'application/json' },
+				throw: false,
+			});
+
+			if (response.status < 200 || response.status >= 300) {
+				if (response.status === 429) {
+					this.launchRetryAfter = getRetryAfterMs(response.headers) ?? Date.now() + DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+				}
+				return this.returnStaleLaunchesOrThrow(`LL2 API returned status ${response.status}`);
+			}
+
+			const data = response.json as LL2Response;
+			const launches = data.results.map(compactLaunch);
+			this.launchCache = { fetchedAt: Date.now(), launches };
+			this.launchRetryAfter = 0;
+			return launches;
+		} catch (err) {
+			return this.returnStaleLaunchesOrThrow(errorMessage(err));
+		}
 	}
 
-	async fetchEvents(): Promise<SpaceEvent[]> {
-		if (this.isCacheValid(this.eventCache) && this.eventCache) {
+	async fetchEvents(options: FetchOptions = {}): Promise<SpaceEvent[]> {
+		if (!options.force && this.isCacheValid(this.eventCache) && this.eventCache) {
 			return this.eventCache.events;
 		}
 
-		const response = await requestUrl({
-			url: `${LL2_BASE}/events/upcoming/?limit=50&ordering=date`,
-			method: 'GET',
-			headers: { 'Accept': 'application/json' },
-			throw: false,
-		});
-
-		if (response.status < 200 || response.status >= 300) {
-			throw new Error(`LL2 API returned status ${response.status}`);
+		if (Date.now() < this.eventRetryAfter && this.eventCache) {
+			return this.eventCache.events;
 		}
 
-		const data = response.json as LL2EventResponse;
-		const events = data.results.map(compactEvent);
-		this.eventCache = { fetchedAt: Date.now(), events };
-		return events;
+		try {
+			const response = await requestUrl({
+				url: `${LL2_BASE}/events/upcoming/?limit=50&ordering=date`,
+				method: 'GET',
+				headers: { 'Accept': 'application/json' },
+				throw: false,
+			});
+
+			if (response.status < 200 || response.status >= 300) {
+				if (response.status === 429) {
+					this.eventRetryAfter = getRetryAfterMs(response.headers) ?? Date.now() + DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+				}
+				return this.returnStaleEventsOrThrow(`LL2 API returned status ${response.status}`);
+			}
+
+			const data = response.json as LL2EventResponse;
+			const events = data.results.map(compactEvent);
+			this.eventCache = { fetchedAt: Date.now(), events };
+			this.eventRetryAfter = 0;
+			return events;
+		} catch (err) {
+			return this.returnStaleEventsOrThrow(errorMessage(err));
+		}
 	}
 
 	clearCache() {
 		this.launchCache = null;
 		this.eventCache = null;
+		this.launchRetryAfter = 0;
+		this.eventRetryAfter = 0;
+	}
+
+	getRateLimitNotice(): string | null {
+		const retryAfter = Math.max(this.launchRetryAfter, this.eventRetryAfter);
+		if (Date.now() >= retryAfter) return null;
+		return 'Showing cached data because LL2 is rate-limiting requests.';
+	}
+
+	private returnStaleLaunchesOrThrow(reason: string): Launch[] {
+		if (this.launchCache) {
+			return this.launchCache.launches;
+		}
+		throw new Error(reason);
+	}
+
+	private returnStaleEventsOrThrow(reason: string): SpaceEvent[] {
+		if (this.eventCache) {
+			return this.eventCache.events;
+		}
+		throw new Error(reason);
 	}
 }
 
@@ -264,4 +332,21 @@ function compactEvent(event: SpaceEvent): SpaceEvent {
 
 function cacheSize(cache: SerializableCache): number {
 	return new TextEncoder().encode(JSON.stringify(cache)).byteLength;
+}
+
+function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+function getRetryAfterMs(headers: Record<string, string>): number | null {
+	const retryAfter = headers['Retry-After'] ?? headers['retry-after'];
+	if (!retryAfter) return null;
+
+	const seconds = Number(retryAfter);
+	if (Number.isFinite(seconds)) {
+		return Date.now() + seconds * 1000;
+	}
+
+	const retryDate = new Date(retryAfter).getTime();
+	return Number.isFinite(retryDate) ? retryDate : null;
 }

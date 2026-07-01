@@ -40,8 +40,7 @@ export default class SpaceLaunches extends Plugin {
 			id: 'refresh-data',
 			name: 'Refresh launch data',
 			callback: () => {
-				this.client.clearCache();
-				void this.getView()?.refresh();
+				void this.getView()?.refresh({ force: true });
 			},
 		});
 
@@ -90,6 +89,7 @@ export default class SpaceLaunches extends Plugin {
 		let launches;
 		try {
 			launches = await this.client.fetchUpcoming();
+			void this.saveSettings();
 		} catch {
 			return;
 		}
